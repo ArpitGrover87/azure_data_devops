@@ -1,0 +1,59 @@
+steps:
+    - task: AzureCLI@1
+      displayName: 'Install Libraries to cluster'
+      enabled: true
+      inputs:
+        azureSubscription: '${{ parameters.serviceConnectionName }}'
+        ScriptLocation: 'InlineScript'
+        inlineScript: |
+                #!/bin/bash
+                pat_token='${{ parameters.accessToken }}'
+                clusterId='${{ parameters.clusterId }}'
+                
+                # check if latest versions 
+                python -m pip install --upgrade pip
+                python -m pip install --upgrade setuptools wheel
+
+                cd $(Build.SourcesDirectory)/databricks/Shared/libraries
+                # pattern for setup files
+                libraries_pattern="*-lib"
+                libraries_folder=( $libraries_pattern )
+                file_separator="/"
+                echo "${libraries_folder[@]}"
+
+                for library in "${libraries_folder[@]}"
+                do
+                  cd $library
+                  # create wheel file
+                  python setup.py bdist_wheel --universal
+                  cd ..
+                done
+
+                ## For uploading and installing wheel libraries as seperate files
+                wheels_pattern="*/dist/*.whl"
+                wheel_files=( $wheels_pattern )
+                file_separator="/"
+                echo "${wheel_files[@]}"
+
+                # accessing each wheel file
+                for wheel in "${wheel_files[@]}"
+                do
+                    echo $wheel
+                    echo ${wheel##*$file_separator}
+                    wheel_file_name=${wheel##*$file_separator}
+
+                    # creating content
+                    wheel_file="$(Build.SourcesDirectory)/databricks/Shared/libraries/$wheel"    
+                    echo $wheel_file
+
+                    # putting wheel file to dbfs path
+                    api_response=$(curl -v POST "https://$(location).azuredatabricks.net/api/2.0/dbfs/put" \
+                    -H "Authorization: Bearer $pat_token" \
+                    -F path="/FileStore/custom_lib/$wheel_file_name" -F contents=@$wheel_file -F overwrite=true)
+                    echo "DBFS put response:" $api_response
+
+                    # installing wheel file from dbfs path
+                    api_response=$(curl -v POST "https://$(location).azuredatabricks.net/api/2.0/libraries/install" \
+                    -H "Authorization: Bearer $pat_token" -d "{\"cluster_id\": \"$clusterId\", \"libraries\": [{\"whl\": \"dbfs:/FileStore/custom_lib/$wheel_file_name\"}]}")
+                    echo " install library response:" $api_response
+                done
